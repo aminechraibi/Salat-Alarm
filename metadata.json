@@ -1,0 +1,6 @@
+{
+  "name": "Salat Alarm",
+  "description": "Offline prayer reminder and alarm app with custom short spoken Arabic reminders, multiple independent alarms, and local calculation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

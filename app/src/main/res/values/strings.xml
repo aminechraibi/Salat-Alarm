@@ -1,0 +1,42 @@
+<resources>
+    <string name="app_name">Salat Alarm</string>
+    <string name="app_tagline">منبّه ومذكّر مواقيت الصلاة بدون إنترنت</string>
+    
+    <!-- Prayers -->
+    <string name="prayer_fajr">الفجر</string>
+    <string name="prayer_chorouk">الشروق</string>
+    <string name="prayer_dhuhr">الظهر</string>
+    <string name="prayer_asr">العصر</string>
+    <string name="prayer_maghrib">المغرب</string>
+    <string name="prayer_isha">العشاء</string>
+
+    <string name="prayer_fajr_en">Fajr</string>
+    <string name="prayer_chorouk_en">Sunrise</string>
+    <string name="prayer_dhuhr_en">Dhuhr</string>
+    <string name="prayer_asr_en">Asr</string>
+    <string name="prayer_maghrib_en">Maghrib</string>
+    <string name="prayer_isha_en">Isha</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">الرئيسية</string>
+    <string name="nav_alarms">التنبيهات</string>
+    <string name="nav_audio">الصوتيات</string>
+    <string name="nav_settings">الإعدادات</string>
+    <string name="nav_diagnostics">التشخيص</string>
+
+    <!-- Actions -->
+    <string name="action_snooze">غفوة (تأجيل)</string>
+    <string name="action_dismiss">إيقاف التنبيه</string>
+    <string name="action_preview">استماع</string>
+    <string name="action_stop">إيقاف</string>
+    <string name="action_add_alarm">إضافة تنبيه جديد</string>
+    <string name="action_save">حفظ</string>
+    <string name="action_delete">حذف</string>
+    <string name="action_edit">تعديل</string>
+    <string name="action_test_alarm">تجربة تنبيه فوري</string>
+
+    <!-- Notifications -->
+    <string name="notif_channel_alarms">تنبيهات الصلاة</string>
+    <string name="notif_channel_alarms_desc">إشعارات التذكير الصوتي بأوقات الصلاة</string>
+    <string name="notif_alarm_firing">تذكير بوقت الصلاة</string>
+</resources>

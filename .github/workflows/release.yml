@@ -1,0 +1,503 @@
+name: Build, Sign & Release APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+  pull_request:
+    branches:
+      - main
+      - master
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+
+  # ==========================================================
+  # TEST
+  # ==========================================================
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Ensure Gradle Wrapper
+        run: |
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            gradle wrapper --gradle-version 9.3.1
+          fi
+          chmod +x ./gradlew || true
+
+      - name: Restore Debug Keystore
+        run: |
+          if [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f "debug.keystore" ]; then
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Run Unit Tests
+        run: |
+          if [ -f "./gradlew" ] && [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            ./gradlew testDebugUnitTest --no-daemon
+          else
+            gradle testDebugUnitTest --no-daemon
+          fi
+
+
+  # ==========================================================
+  # RELEASE
+  # ==========================================================
+
+  release:
+    name: Build Signed APK & Release
+
+    needs:
+      - test
+
+    # Do not expose signing secrets to pull requests.
+    if: github.event_name != 'pull_request'
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # --------------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------------
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+
+      # --------------------------------------------------------
+      # JAVA
+      # --------------------------------------------------------
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+
+      # --------------------------------------------------------
+      # GRADLE
+      # --------------------------------------------------------
+
+      - name: Ensure Gradle Wrapper
+        run: |
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            gradle wrapper --gradle-version 9.3.1
+          fi
+          chmod +x ./gradlew || true
+
+
+      # --------------------------------------------------------
+      # READ VERSION
+      # --------------------------------------------------------
+
+      - name: Read Android App Version
+        id: version
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "app/build.gradle.kts" ]; then
+            GRADLE_FILE="app/build.gradle.kts"
+          elif [ -f "app/build.gradle" ]; then
+            GRADLE_FILE="app/build.gradle"
+          else
+            echo "ERROR: Android app Gradle file not found."
+            exit 1
+          fi
+
+          echo "Using Gradle file: $GRADLE_FILE"
+
+          VERSION_NAME=$(grep -E 'versionName[[:space:]]*=[[:space:]]*"[^"]+"' "$GRADLE_FILE" \
+            | head -n 1 \
+            | sed -E 's/.*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/' || true)
+
+          VERSION_CODE=$(grep -E 'versionCode[[:space:]]*=[[:space:]]*[0-9]+' "$GRADLE_FILE" \
+            | head -n 1 \
+            | sed -E 's/.*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/' || true)
+
+          if [ -z "$VERSION_NAME" ]; then
+            echo "ERROR: Could not find versionName in $GRADLE_FILE"
+            exit 1
+          fi
+
+          if [ -z "$VERSION_CODE" ]; then
+            echo "ERROR: Could not find versionCode in $GRADLE_FILE"
+            exit 1
+          fi
+
+          RELEASE_TAG="v${VERSION_NAME}"
+
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+          echo "Version Name : $VERSION_NAME"
+          echo "Version Code : $VERSION_CODE"
+          echo "Release Tag  : $RELEASE_TAG"
+
+
+      # --------------------------------------------------------
+      # MAKE SURE TAG DOES NOT ALREADY EXIST
+      # --------------------------------------------------------
+
+      - name: Check Release Tag
+        shell: bash
+        run: |
+          set -e
+
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "ERROR: Git tag '$RELEASE_TAG' already exists."
+            echo ""
+            echo "Increase versionName and versionCode before releasing."
+            exit 1
+          fi
+
+          echo "Tag $RELEASE_TAG is available."
+
+
+      # --------------------------------------------------------
+      # VALIDATE REQUIRED SECRETS
+      # --------------------------------------------------------
+
+      - name: Validate Signing Secrets
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -e
+
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "ERROR: ANDROID_KEYSTORE_BASE64 is missing."
+            exit 1
+          fi
+
+          if [ -z "$STORE_PASSWORD" ]; then
+            echo "ERROR: ANDROID_KEYSTORE_PASSWORD is missing."
+            exit 1
+          fi
+
+          if [ -z "$KEY_ALIAS" ]; then
+            echo "ERROR: ANDROID_KEY_ALIAS is missing."
+            exit 1
+          fi
+
+          if [ -z "$KEY_PASSWORD" ]; then
+            echo "ERROR: ANDROID_KEY_PASSWORD is missing."
+            exit 1
+          fi
+
+          echo "All required signing secrets are available."
+
+
+      # --------------------------------------------------------
+      # RESTORE PERMANENT KEYSTORE
+      # --------------------------------------------------------
+
+      - name: Restore Release Keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -e
+
+          KEYSTORE_FILE="$RUNNER_TEMP/android-global-release.jks"
+
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode \
+            > "$KEYSTORE_FILE"
+
+          if [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "ERROR: Decoded keystore is empty."
+            exit 1
+          fi
+
+          echo "KEYSTORE_PATH=$KEYSTORE_FILE" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+          echo "Keystore restored successfully."
+
+
+      # --------------------------------------------------------
+      # VERIFY KEYSTORE
+      # --------------------------------------------------------
+
+      - name: Verify Release Keystore
+        shell: bash
+        run: |
+          set -e
+
+          keytool \
+            -list \
+            -keystore "$KEYSTORE_PATH" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" \
+            >/dev/null
+
+          echo "Keystore and alias verified."
+
+
+      # --------------------------------------------------------
+      # SHOW CERTIFICATE FINGERPRINT
+      # --------------------------------------------------------
+
+      - name: Show Signing Certificate Fingerprint
+        shell: bash
+        run: |
+          set -e
+
+          echo "Signing certificate:"
+          echo ""
+
+          keytool \
+            -list \
+            -v \
+            -keystore "$KEYSTORE_PATH" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" \
+            | grep -E "Alias name:|SHA1:|SHA256:" || true
+
+
+      # --------------------------------------------------------
+      # BUILD SIGNED RELEASE APK
+      # --------------------------------------------------------
+
+      - name: Build Signed Release APK
+        env:
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ env.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ env.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ env.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -f "./gradlew" ] && [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            ./gradlew clean assembleRelease --no-daemon
+          else
+            gradle clean assembleRelease --no-daemon
+          fi
+
+
+      # --------------------------------------------------------
+      # LOCATE APK
+      # --------------------------------------------------------
+
+      - name: Prepare APK
+        shell: bash
+        run: |
+          set -e
+
+          APK_PATH=$(find . -type f -path "*/outputs/apk/release/*.apk" ! -name "*unsigned*" | head -n 1)
+
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: Signed release APK not found."
+            echo ""
+            find . -type f -path "*/outputs/*" 2>/dev/null || true
+            exit 1
+          fi
+
+          mkdir -p release-output
+
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+
+          OUTPUT_FILE="release-output/${REPO_NAME}-${RELEASE_TAG}.apk"
+
+          cp "$APK_PATH" "$OUTPUT_FILE"
+
+          echo "APK_OUTPUT=$OUTPUT_FILE" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "APK:"
+          echo "$OUTPUT_FILE"
+
+
+      # --------------------------------------------------------
+      # FIND APKSIGNER
+      # --------------------------------------------------------
+
+      - name: Locate Android APK Signer
+        shell: bash
+        run: |
+          set -e
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
+            -type f \
+            -name "apksigner" \
+            | sort -V \
+            | tail -n 1)
+
+          if [ -z "$APKSIGNER" ]; then
+            echo "ERROR: apksigner could not be found."
+            exit 1
+          fi
+
+          echo "APKSIGNER_PATH=$APKSIGNER" >> "$GITHUB_ENV"
+
+          echo "Using:"
+          echo "$APKSIGNER"
+
+
+      # --------------------------------------------------------
+      # VERIFY APK SIGNATURE
+      # --------------------------------------------------------
+
+      - name: Verify APK Signature
+        shell: bash
+        run: |
+          set -e
+
+          "$APKSIGNER_PATH" verify \
+            --verbose \
+            --print-certs \
+            "$APK_OUTPUT"
+
+          echo ""
+          echo "APK signature verified successfully."
+
+
+      # --------------------------------------------------------
+      # CREATE SHA-256 CHECKSUM
+      # --------------------------------------------------------
+
+      - name: Create APK Checksum
+        shell: bash
+        run: |
+          set -e
+
+          sha256sum "$APK_OUTPUT" > "${APK_OUTPUT}.sha256"
+
+          echo ""
+          echo "APK SHA-256:"
+          cat "${APK_OUTPUT}.sha256"
+
+
+      # --------------------------------------------------------
+      # SAVE APK AS WORKFLOW ARTIFACT
+      # --------------------------------------------------------
+
+      - name: Upload Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.repository.name }}-${{ env.RELEASE_TAG }}
+          path: |
+            ${{ env.APK_OUTPUT }}
+            ${{ env.APK_OUTPUT }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+
+      # --------------------------------------------------------
+      # CREATE GIT TAG
+      # --------------------------------------------------------
+
+      - name: Create Git Tag
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag \
+            -a "$RELEASE_TAG" \
+            -m "Release $RELEASE_TAG (Build $VERSION_CODE)"
+
+          git push origin "$RELEASE_TAG"
+
+          echo "Created tag: $RELEASE_TAG"
+
+
+      # --------------------------------------------------------
+      # CREATE GITHUB RELEASE
+      # --------------------------------------------------------
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+
+          name: >-
+            Salat Alarm
+            ${{ env.RELEASE_TAG }}
+
+          generate_release_notes: true
+
+          body: |
+            ## 🕌 Salat Alarm - Release ${{ env.RELEASE_TAG }}
+
+            **Version:** `${{ env.VERSION_NAME }}`
+            **Version Code:** `${{ env.VERSION_CODE }}`
+
+            ### 🚀 Features & Highlights
+            - **100% Offline Prayer Times Calculation**: Exact solar astronomical calculation engine for Fajr, Chorouk (Sunrise), Dhuhr, Asr, Maghrib, and Isha without requiring internet connectivity.
+            - **Authentic Net Vocal Recordings**: Real recorded opening Takbirs from the Grand Mosque in Makkah (*Sheikh Ali Mulla*), the Prophet's Mosque in Madinah (*Sheikh Essam Bukhari*), Mishary Rashid Alafasy, Masjid Al-Aqsa, and Sheikh Abdul Basit (strictly zero full Adhan, discrete spoken reminders).
+            - **Precision Minute Offset Control (-60 to +60 min)**: Specify exact alarm timings relative to Adhan with 0 as the middle (at Adhan), negative values before Adhan, and positive increment values after Adhan.
+            - **Multiple Independent Alarms Per Prayer**: Schedule unlimited custom alarms per prayer, quick steppers (`-5`, `-1`, `0`, `+1`, `+5`), and 1-tap bulk scheduling across all prayers.
+            - **Interactive Snooze & Audio Repetition Policy**: Configurable audio repeat count (1×–4×), delay intervals, and snooze duration with maximum count safety.
+            - **Resilient Background Recovery**: Restores alarms after reboot, timezone changes, and clock updates via `AlarmManager` exact scheduling and foreground playback service.
+            - **Local SQLite Persistence**: On-device Room database storing prayer settings, custom alarm rules, and execution tracking.
+
+            ### 📲 Installation Instructions
+
+            1. Download the release APK below (`.apk`) and install it on your Android device.
+            2. Grant exact alarm and notification permissions for reliable background audio alerts.
+
+            ### 🔒 Integrity & Verification
+
+            A SHA-256 checksum file (`.apk.sha256`) is attached to verify file integrity.
+
+          files: |
+            ${{ env.APK_OUTPUT }}
+            ${{ env.APK_OUTPUT }}.sha256
+
+          fail_on_unmatched_files: true
+
+
+      # --------------------------------------------------------
+      # REMOVE KEYSTORE
+      # --------------------------------------------------------
+
+      - name: Remove Temporary Keystore
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/android-global-release.jks"
